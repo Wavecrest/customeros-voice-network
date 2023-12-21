@@ -40,6 +40,9 @@ def ksr_utils_init(_mock_data):
     _mock_data['']['is_REGISTER'] = is_register
     _mock_data['']['is_OPTIONS'] = is_options
     _mock_data['']['is_WS'] = is_WS
+    _mock_data['']['is_TCP'] = is_TCP
+    _mock_data['']['is_UDP'] = is_UDP
+    _mock_data['']['is_TLS'] = is_TLS
     _mock_data['']['is_method_in'] = is_method_in
     _mock_data['']['info'] = print
     _mock_data['']['warn'] = print
@@ -53,13 +56,32 @@ def ksr_utils_init(_mock_data):
     _mock_data['tm']['t_check_trans'] = -1
     _mock_data['hdr']['append'] = hdr_append
     _mock_data['hdr']['remove'] = hdr_remove
+    _mock_data['hdr']['get'] = hdr_get
+    _mock_data['hdr']['is_present'] = hdr_present
     _mock_data['dispatcher']['ds_select_dst'] = dispatcher_select_dst
-    _mock_data['nathelper']['fix_nated_register'] = fix_nated_register
+    _mock_data['dispatcher']['ds_select_domain'] = ds_select_domain
+    if 'nathelper' in _mock_data:
+        _mock_data['nathelper']['fix_nated_register'] = fix_nated_register
 
 def dispatcher_select_dst(group: int, algo: int):
-    pvar_set("$nh(u)", "sip:dispatcher_group_" + str(group))
-    pvar_set("$nh(d)", "dispatcher_group_" + str(group))
+    pvar_set("$du", "sip:dispatcher_group_" + str(group) + ";transport=TCP")
     return 1
+
+def ds_select_domain(group: int, algo: int):
+    print("ds_select_domain called!\n")
+    pvar_set("$ru", "sip:" + pvar_get("$rU") + "@dispatcher_group_" + str(group) + ";transport=TCP")
+    return 1
+
+def hdr_present(hdr_key: str):
+    if hdr_key in hdr_vals and len(hdr_vals[hdr_key]) > 0:
+        return 1
+    return -1
+
+def hdr_get(hdr_key: str):
+    if hdr_key in hdr_vals and len(hdr_vals[hdr_key]) > 0:
+        return hdr_vals[hdr_key][0]
+    return None
+
 def hdr_remove(hdr_key: str):
     global hdr_vals
     if hdr_key in hdr_vals and len(hdr_vals[hdr_key]) > 0:
@@ -193,7 +215,7 @@ def get_special_pvar(key):
     elif key == "$rU":
         return get_user(pvar_get("$ru"))
     elif key == "$rd":
-        return get_user(pvar_get("$ru"))
+        return get_domain(pvar_get("$ru"))
 
     result = re.search("^\$\((.*)\)$", key)
     if result is not None:
@@ -368,7 +390,16 @@ def fix_nated_register() -> int:
     pvar_set("$avp(RECEIVED)", "sip:10.0.0.1;transport=ws")
     return 1
 
-def is_WS():
+def is_WS() -> bool:
     if pvar_get("$Rp") == 8080:
         return True
     return False
+
+def is_TCP() -> bool:
+    return pvar_get("$pr") == "TCP"
+
+def is_UDP() -> bool:
+    return pvar_get("$pr") == "UDP"
+
+def is_TLS() -> bool:
+    return pvar_get("$pr") == "TLS"
