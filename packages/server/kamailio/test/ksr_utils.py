@@ -26,6 +26,7 @@ def ksr_utils_init(_mock_data):
     _mock_data['pv']['getw'] = pvar_getw
     _mock_data['pv']['gete'] = pvar_gete
     _mock_data['pv']['sets'] = pvar_set
+    _mock_data['pv']['seti'] = pvar_set
     _mock_data['htable']['sht_get'] = sht_get
     _mock_data['htable']['sht_getw'] = sht_getw
     _mock_data['htable']['sht_gete'] = sht_gete
