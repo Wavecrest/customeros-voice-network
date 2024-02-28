@@ -26,13 +26,13 @@ def ksr_utils_init(_mock_data):
     _mock_data['pv']['getw'] = pvar_getw
     _mock_data['pv']['gete'] = pvar_gete
     _mock_data['pv']['sets'] = pvar_set
-    _mock_data['pv']['seti'] = pvar_set
+    _mock_data['pv']['seti'] = pvar_seti
     _mock_data['htable']['sht_get'] = sht_get
     _mock_data['htable']['sht_getw'] = sht_getw
     _mock_data['htable']['sht_gete'] = sht_gete
     _mock_data['htable']['sht_inc'] = sht_inc
     _mock_data['htable']['sht_sets'] = sht_set
-    _mock_data['htable']['sht_seti'] = sht_set
+    _mock_data['htable']['sht_seti'] = sht_seti
     _mock_data['']['is_INVITE'] = is_invite
     _mock_data['']['is_KDMQ'] = is_kdmq
     _mock_data['']['is_ACK'] = is_ack
@@ -284,10 +284,26 @@ def pvar_set(key, value):
     pvar_vals[key] = value
     return 1
 
+def pvar_seti(key, value):
+    global pvar_vals
+    print("Value is of type %s\n" % type(value))
+    assert(isinstance(value, int))
+
+    if pvar_set_special(key, value):
+        return 1
+    pvar_vals[key] = value
+    return 1
 
 def sht_set(table: str, key: str, value: Union[str,int]):
     global pvar_vals
 
+    pvar_vals["$sht(%s=>%s)" % (table, key)] = value
+    return 1
+
+
+def sht_seti(table: str, key: int, value: Union[str,int]):
+    global pvar_vals
+    assert(isinstance(value, int))
     pvar_vals["$sht(%s=>%s)" % (table, key)] = value
     return 1
 
