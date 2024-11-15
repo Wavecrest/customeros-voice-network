@@ -3,14 +3,19 @@ from typing import Union
 
 pvar_vals = {}
 hdr_vals = {}
+hdr_iterators = {}
 
 registrations = {"kamailio_location": {}}
 
+pending_changes = []
 
 def ksr_utils_init(_mock_data):
     global registrations
     global pvar_vals
     global hdr_vals
+    global pending_changes
+
+    pending_changes = []
 
     pvar_vals = {}
     hdr_vals = {}
@@ -61,8 +66,37 @@ def ksr_utils_init(_mock_data):
     _mock_data['hdr']['is_present'] = hdr_present
     _mock_data['dispatcher']['ds_select_dst'] = dispatcher_select_dst
     _mock_data['dispatcher']['ds_select_domain'] = ds_select_domain
+    _mock_data['textopsx']['hf_iterator_start'] = hf_iterator_start
+    _mock_data['textopsx']['hf_iterator_next'] = hf_iterator_next
+    _mock_data['textopsx']['hf_iterator_end'] = hf_iterator_end
+    _mock_data['textopsx']['msg_apply_changes'] = textopsx_msg_apply_changes
     if 'nathelper' in _mock_data:
         _mock_data['nathelper']['fix_nated_register'] = fix_nated_register
+
+def hf_iterator_start(name: str):
+    global hdr_vals
+    global hdr_iterators
+    hdr_iterators[name] = {"list": list(hdr_vals.keys()), "index": -1}
+    return 1
+
+def hf_iterator_next(name: str):
+    global hdr_iterators
+    if name not in hdr_iterators:
+        print("Iterator not started!")
+        assert False
+    hdr_iterators[name]["index"] += 1
+    print("Comparing index %d to length %d" % (hdr_iterators[name]["index"], len(hdr_iterators[name]["list"])) )
+    if hdr_iterators[name]["index"] >= len(hdr_iterators[name]["list"]):
+        return -1
+    return 1
+
+def hf_iterator_end(name: str):
+    global hdr_iterators
+    if name not in hdr_iterators:
+        print("Iterator not started!")
+        assert False
+    del hdr_iterators[name]
+    return 1
 
 def dispatcher_select_dst(group: int, algo: int):
     pvar_set("$du", "sip:dispatcher_group_" + str(group) + ";transport=TCP")
@@ -157,6 +191,8 @@ def get_domain(uri: str):
         return result.group(3)
     print("Parse error for uri (%s)\n" % (uri))
     assert(False)
+
+
 def get_param(uri: str, param: str):
     print("Looking for param %s in uri %s\n" % (param, uri))
     result = re.search(SIPURI_REGEX, uri)
@@ -164,6 +200,20 @@ def get_param(uri: str, param: str):
         print("Parse error for uri (%s)\n" % (uri))
         assert (False)
     param_list = result.group(4)
+    print("Param list of %s\n" % param_list)
+    result = re.search(";%s=([^;]+)" % param, param_list)
+    if result is None:
+        print("parameter (%s) not found\n" % (param))
+        return ""
+    return result[1]
+
+def get_header_param(header: str, param: str):
+    print("Looking for param %s in header %s\n" % (param, header))
+    result = re.search("((;[^;<>]+)=([^;<>])+)*$", header)
+    if result is None:
+        print("Parse error for header (%s)\n" % (header))
+        assert (False)
+    param_list = result.group(1)
     print("Param list of %s\n" % param_list)
     result = re.search(";%s=([^;]+)" % param, param_list)
     if result is None:
@@ -208,11 +258,16 @@ def get_user(uri: str):
 
 def get_special_pvar(key):
     global hdr_vals
+    global hdr_iterators
 
     if key == "$fU":
         return get_user(pvar_get("$fu"))
     elif key == "$fd":
         return get_domain(pvar_get("$fu"))
+    elif key == "$tU":
+        return get_user(pvar_get("$tu"))
+    elif key == "$td":
+        return get_domain(pvar_get("$tu"))
     elif key == "$rU":
         return get_user(pvar_get("$ru"))
     elif key == "$rd":
@@ -225,9 +280,12 @@ def get_special_pvar(key):
         if text_op.endswith("{uri.user}"):
             key = pvar_get("$(%s)"% text_op[:-len("{uri.user}")])
             return get_user(key)
+        if text_op.endswith("{uri.host}"):
+            key = pvar_get("$(%s)"% text_op[:-len("{uri.host}")])
+            return get_domain(key)
         if text_op.endswith("{nameaddr.uri}"):
             key = pvar_get("$(%s)"% text_op[:-len("{nameaddr.uri}")])
-            result = re.search("^\<(.*)\>", key)
+            result = re.search("<(.*)>", key)
             if result is not None:
                 return result.group(1)
             else:
@@ -236,6 +294,10 @@ def get_special_pvar(key):
             result = re.search("{uri.param,([^}]+)}$", text_op)
             uri = pvar_get("$(%s)"% text_op[:-len(result.group(0))])
             return get_param(uri, result.group(1))
+        if re.search("{param.value,([^}]+)}$", text_op) is not None:
+            result = re.search("{param.value,([^}]+)}$", text_op)
+            header = pvar_get("$(%s)" % text_op[:-len(result.group(0))])
+            return get_header_param(header, result.group(1))
         else:
             key = pvar_get("$%s"% text_op)
             return key
@@ -253,6 +315,32 @@ def get_special_pvar(key):
         if len(hdr_vals[resolved_hdr_key]) > 0:
             print("Header %s has value of %s\n" % (resolved_hdr_key, hdr_vals[resolved_hdr_key]))
             return hdr_vals[resolved_hdr_key][0]
+
+    result = re.search("^\$hfitbody\((.*)\)$", key)
+    if result is not None:
+        iterator_key = result.group(1)
+        print("Header function iterator name found %s!\n" % iterator_key)
+        resolved_iterator_key = resolve_xval(iterator_key)
+        if resolved_iterator_key not in hdr_iterators:
+            return None
+        hdr_key = hdr_iterators[resolved_iterator_key]["list"][hdr_iterators[resolved_iterator_key]["index"]]
+        if hdr_vals[hdr_key] is None:
+            return None
+        if len(hdr_vals[hdr_key]) > 0:
+            return hdr_vals[hdr_key][0]
+
+    result = re.search("^\$hfitname\((.*)\)$", key)
+    if result is not None:
+        iterator_key = result.group(1)
+        print("Header function iterator name found %s!\n" % iterator_key)
+        resolved_iterator_key = resolve_xval(iterator_key)
+        if resolved_iterator_key not in hdr_iterators:
+            return None
+        hdr_index = hdr_iterators[resolved_iterator_key]["index"]
+        print("Header function iterator index found %s!\n" % hdr_index)
+        hdr_key = hdr_iterators[resolved_iterator_key]["list"][hdr_index]
+        return hdr_key
+
     return None
 def pvar_get(key):
     global pvar_vals
@@ -265,17 +353,40 @@ def pvar_get(key):
     print("%s => %s\n" % (key, pvar_vals[key]))
     return pvar_vals[key]
 
+
+# setting vars that modify the message, doesn't impact the value of get
+# until the changes are applied
 def pvar_set_special(key: str, value: str):
     if key == "$fU":
-        return pvar_set("$fu", set_user(pvar_get("$fu"), value))
+        pending_changes.append({"key": key, "value": value})
+        return True
     elif key == "$fd":
-        return pvar_set("$fu", set_domain(pvar_get("$fu"), value))
+        pending_changes.append({"key": key, "value": value})
+        return True
+    elif key == "$fu":
+        pending_changes.append({"key": key, "value": value})
+        return True
+    elif key == "$tU":
+        pending_changes.append({"key": key, "value": value})
+        return True
+    elif key == "$td":
+        pending_changes.append({"key": key, "value": value})
+        return True
+    elif key == "$tu":
+        pending_changes.append({"key": key, "value": value})
+        return True
     elif key == "$rU":
-        return pvar_set("$ru", set_user(pvar_get("$ru"), value))
+        pending_changes.append({"key": key, "value": value})
+        return True
     elif key == "$rd":
-        return pvar_set("$ru", set_domain(pvar_get("$ru"), value))
+        pending_changes.append({"key": key, "value": value})
+        return True
+    elif key == "$ru":
+        pending_changes.append({"key": key, "value": value})
+        return True
 
     return False
+
 def pvar_set(key, value):
     global pvar_vals
 
@@ -293,6 +404,35 @@ def pvar_seti(key, value):
         return 1
     pvar_vals[key] = value
     return 1
+
+
+def pvar_apply_special(key: str, value: str):
+    if key == "$fU":
+        return pvar_apply("$fu", set_user(pvar_get("$fu"), value))
+    elif key == "$fd":
+        return pvar_apply("$fu", set_domain(pvar_get("$fu"), value))
+    if key == "$tU":
+        return pvar_apply("$tu", set_user(pvar_get("$tu"), value))
+    elif key == "$td":
+        return pvar_apply("$tu", set_domain(pvar_get("$tu"), value))
+    elif key == "$rU":
+        return pvar_apply("$ru", set_user(pvar_get("$ru"), value))
+    elif key == "$rd":
+        return pvar_apply("$ru", set_domain(pvar_get("$ru"), value))
+    else:
+        pvar_apply(key, value)
+
+    return False
+
+def pvar_apply(key: str, value: str):
+    pvar_vals[key] = value
+    return 1
+
+def textopsx_msg_apply_changes():
+    global pending_changes
+    for change in pending_changes:
+        pvar_apply_special(change["key"], change["value"])
+    pending_changes = []
 
 def sht_set(table: str, key: str, value: Union[str,int]):
     global pvar_vals
