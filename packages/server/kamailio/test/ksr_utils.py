@@ -28,8 +28,10 @@ def ksr_utils_init(_mock_data):
     _mock_data['permissions'] = {}
 
     _mock_data['pv']['get'] = pvar_get
+    _mock_data['pv']['geti'] = pvar_get
     _mock_data['pv']['getw'] = pvar_getw
     _mock_data['pv']['gete'] = pvar_gete
+    _mock_data['pv']['geti'] = pvar_geti
     _mock_data['pv']['sets'] = pvar_set
     _mock_data['pv']['seti'] = pvar_seti
     _mock_data['htable']['sht_get'] = sht_get
@@ -38,6 +40,7 @@ def ksr_utils_init(_mock_data):
     _mock_data['htable']['sht_inc'] = sht_inc
     _mock_data['htable']['sht_sets'] = sht_set
     _mock_data['htable']['sht_seti'] = sht_seti
+    _mock_data['']['is_dsturiset'] = is_dsturiset
     _mock_data['']['is_INVITE'] = is_invite
     _mock_data['']['is_KDMQ'] = is_kdmq
     _mock_data['']['is_ACK'] = is_ack
@@ -69,7 +72,13 @@ def ksr_utils_init(_mock_data):
     _mock_data['textopsx']['hf_iterator_start'] = hf_iterator_start
     _mock_data['textopsx']['hf_iterator_next'] = hf_iterator_next
     _mock_data['textopsx']['hf_iterator_end'] = hf_iterator_end
+    _mock_data['textopsx']['hf_iterator_rm'] = hf_iterator_rm
+    _mock_data['textopsx']['hf_iterator_append'] = hf_iterator_append
     _mock_data['textopsx']['msg_apply_changes'] = textopsx_msg_apply_changes
+
+    if 'sdpops' in _mock_data:
+        _mock_data['sdpops']['sdp_get'] = sdp_get
+
     if 'nathelper' in _mock_data:
         _mock_data['nathelper']['fix_nated_register'] = fix_nated_register
 
@@ -88,6 +97,22 @@ def hf_iterator_next(name: str):
     print("Comparing index %d to length %d" % (hdr_iterators[name]["index"], len(hdr_iterators[name]["list"])) )
     if hdr_iterators[name]["index"] >= len(hdr_iterators[name]["list"]):
         return -1
+    return 1
+
+def hf_iterator_rm(name: str):
+    global hdr_iterators
+    if name not in hdr_iterators:
+        print("Iterator not started!")
+        assert False
+    hdr_remove(hdr_iterators[name]["list"][hdr_iterators[name]["index"]])
+    return 1
+
+def hf_iterator_append(name: str, hdr: str):
+    global hdr_iterators
+    if name not in hdr_iterators:
+        print("Iterator not started!")
+        assert False
+    hdr_append(hdr)
     return 1
 
 def hf_iterator_end(name: str):
@@ -119,11 +144,17 @@ def hdr_get(hdr_key: str):
 
 def hdr_remove(hdr_key: str):
     global hdr_vals
-    if hdr_key in hdr_vals and len(hdr_vals[hdr_key]) > 0:
-        hdr_vals[hdr_key].pop(0)
+    global pending_changes
+    pending_changes.append({"key": "hdr_remove", "value": hdr_key})
+
+def hdr_remove_apply(header: str):
+    global hdr_vals
+    if header in hdr_vals and len(hdr_vals[header]) > 0:
+        hdr_vals[header].pop(0)
 
 def hdr_append(hdr: str):
     global hdr_vals
+    global pending_changes
     if not hdr.endswith("\r\n"):
         print("missing end newline! (%s)\n" % str)
         assert False
@@ -132,13 +163,29 @@ def hdr_append(hdr: str):
         print ("Invalid Hdr Format! (%s)" % hdr.rstrip())
         assert False
 
+    pending_changes.append({"key": "hdr_append(%s)" % result.group(1), "value": result.group(2)})
+
     print ("Setting hdr! (%s => %s)" % (result.group(1), result.group(2)))
 
-    hdr_key = result.group(1)
-    if hdr_key not in hdr_vals:
-        hdr_vals[hdr_key] = []
-    hdr_vals[hdr_key].append(result.group(2))
+def hdr_append_apply(header: str, value: str):
+    global hdr_vals
+    print ("Setting hdr! (%s => %s)" % (header, value))
+
+    if header not in hdr_vals:
+        hdr_vals[header] = []
+    hdr_vals[header].append(value)
     return 1
+
+def get_header_list_of_bodies(header: str):
+    global hdr_vals
+    if header not in hdr_vals:
+        return []
+    result = []
+    for header in hdr_vals[header]:
+        elements = header.split(",")
+        for element in elements:
+            result.append(element.strip())
+    return result
 
 def location_unregister(table: str, uri: str):
     global registrations
@@ -215,10 +262,12 @@ def get_header_param(header: str, param: str):
         assert (False)
     param_list = result.group(1)
     print("Param list of %s\n" % param_list)
+    if param_list is None:
+        return None
     result = re.search(";%s=([^;]+)" % param, param_list)
     if result is None:
         print("parameter (%s) not found\n" % (param))
-        return ""
+        return None
     return result[1]
 
 def get_user(uri: str):
@@ -298,6 +347,40 @@ def get_special_pvar(key):
             result = re.search("{param.value,([^}]+)}$", text_op)
             header = pvar_get("$(%s)" % text_op[:-len(result.group(0))])
             return get_header_param(header, result.group(1))
+        if re.search("^hdr\((.*)\)\[(.*)\]$", text_op) is not None:
+            result = re.search("^hdr\((.*)\)\[(.*)\]$", text_op)
+            hdr_key = result.group(1)
+            hdr_index = result.group(2)
+            print("Header indexed function found %s[%s]!\n" % (hdr_key, hdr_index))
+            resolved_hdr_key = resolve_xval(hdr_key)
+            if resolved_hdr_key not in hdr_vals or hdr_vals[resolved_hdr_key] is None:
+                return None
+
+            resolved_hdr_index = int(resolve_xval(hdr_index))
+
+            if len(hdr_vals[resolved_hdr_key]) > resolved_hdr_index:
+                print("Header %s has value of %s\n" % (resolved_hdr_key, hdr_vals[resolved_hdr_key]))
+                return hdr_vals[resolved_hdr_key][resolved_hdr_index]
+            else:
+                print("Header %s has no value at index %d\n" % (resolved_hdr_key, resolved_hdr_index))
+        if re.search("^hfl\((.*)\)\[(.*)\]$", text_op) is not None:
+            result = re.search("^hfl\((.*)\)\[(.*)\]$", text_op)
+            hdr_key = result.group(1)
+            hdr_index = result.group(2)
+            print("Header indexed with bodies  found %s[%s]!\n" % (hdr_key, hdr_index))
+            resolved_hdr_key = resolve_xval(hdr_key)
+            if resolved_hdr_key not in hdr_vals or hdr_vals[resolved_hdr_key] is None:
+                return None
+
+            resolved_hdr_index = int(resolve_xval(hdr_index))
+
+            hdr_list = get_header_list_of_bodies(resolved_hdr_key)
+
+            if len(hdr_list) > resolved_hdr_index:
+                print("Header %s has value of %s\n" % (resolved_hdr_key, hdr_vals[resolved_hdr_key]))
+                return hdr_list[resolved_hdr_index]
+            else:
+                print("Header %s has no value at index %d\n" % (resolved_hdr_key, resolved_hdr_index))
         else:
             key = pvar_get("$%s"% text_op)
             return key
@@ -315,6 +398,39 @@ def get_special_pvar(key):
         if len(hdr_vals[resolved_hdr_key]) > 0:
             print("Header %s has value of %s\n" % (resolved_hdr_key, hdr_vals[resolved_hdr_key]))
             return hdr_vals[resolved_hdr_key][0]
+
+    result = re.search("^\$hdrc\((.*)\)$", key)
+    if result is not None:
+        hdr_key = result.group(1)
+        print("Header count function found %s!\n" % hdr_key)
+        resolved_hdr_key = resolve_xval(hdr_key)
+        if resolved_hdr_key not in hdr_vals or hdr_vals[resolved_hdr_key] is None:
+            return None
+
+        return len(hdr_vals[resolved_hdr_key])
+
+    result = re.search("^\$hfl\((.*)\)$", key)
+    if result is not None:
+        hdr_key = result.group(1)
+        print("Header function with list of bodies found %s!\n" % hdr_key)
+        resolved_hdr_key  = resolve_xval(hdr_key)
+
+        hdr_list = get_header_list_of_bodies(resolved_hdr_key)
+
+        if len(hdr_list) > 0:
+            print("Header %s has value of %s\n" % (resolved_hdr_key, hdr_list[0]))
+            return hdr_list[0]
+
+    result = re.search("^\$hflc\((.*)\)$", key)
+    if result is not None:
+        hdr_key = result.group(1)
+        print("Header count with list of bodies found %s!\n" % hdr_key)
+        resolved_hdr_key = resolve_xval(hdr_key)
+
+        hdr_list = get_header_list_of_bodies(resolved_hdr_key)
+
+        return len(hdr_list)
+
 
     result = re.search("^\$hfitbody\((.*)\)$", key)
     if result is not None:
@@ -354,6 +470,12 @@ def pvar_get(key):
     return pvar_vals[key]
 
 
+def pvar_geti(key):
+    val = pvar_gete(key)
+    if val == "":
+        return 0
+    return int(val)
+
 # setting vars that modify the message, doesn't impact the value of get
 # until the changes are applied
 def pvar_set_special(key: str, value: str):
@@ -382,6 +504,8 @@ def pvar_set_special(key: str, value: str):
         pending_changes.append({"key": key, "value": value})
         return True
     elif key == "$ru":
+        pending_changes.append({"key": key, "value": value})
+    elif key == "$ct":
         pending_changes.append({"key": key, "value": value})
         return True
 
@@ -419,6 +543,17 @@ def pvar_apply_special(key: str, value: str):
         return pvar_apply("$ru", set_user(pvar_get("$ru"), value))
     elif key == "$rd":
         return pvar_apply("$ru", set_domain(pvar_get("$ru"), value))
+    elif key == "$ct":
+        hdr_vals["Contact"] = [value]
+        return 1
+    elif key == "hdr_remove":
+        hdr_remove_apply(value)
+        return 1
+    elif key.startswith("hdr_append("):
+        result = re.match("^hdr_append\((.*)\)$", key)
+        if result is not None:
+            hdr_append_apply(result.group(1), value)
+            return 1
     else:
         pvar_apply(key, value)
 
@@ -485,6 +620,11 @@ def siputils_has_to_tag():
     return 1
 
 
+def is_dsturiset():
+    if pvar_get("$du") is None:
+        return False
+    return True
+
 def is_invite():
     if pvar_get("$rm") == "INVITE":
         return True
@@ -542,6 +682,23 @@ def is_method_in(vmethod: str):
     else:
         return True
 
+def sdp_get(avp: str) -> int:
+    sdp = """v=0
+o=root 112120476929694 112120476929694 IN IP4 185.162.101.11
+s=-
+c=IN IP4 185.162.101.11
+t=0 0
+m=audio 54226 RTP/AVP 8 0 18 101
+a=sendrecv
+a=rtpmap:8 PCMA/8000
+a=rtpmap:0 PCMU/8000
+a=rtpmap:18 G729/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:18 annexb=no
+a=fmtp:101 0-16
+a=maxptime:150"""
+    pvar_set(avp, sdp)
+    return 1
 
 def fix_nated_register() -> int:
     pvar_set("$avp(RECEIVED)", "sip:10.0.0.1;transport=ws")
